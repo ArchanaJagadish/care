@@ -1,15 +1,9 @@
 from django.db import models
 from multiselectfield import MultiSelectField
 
-from care.facility.models import CATEGORY_CHOICES
+from care.facility.models import CATEGORY_CHOICES, PatientBaseModel
 from care.facility.models.mixins.permissions.patient import PatientRelatedPermissionMixin
-from care.facility.models.patient_base import (
-    ADMIT_CHOICES,
-    CURRENT_HEALTH_CHOICES,
-    SYMPTOM_CHOICES,
-    PatientBaseModel,
-    SuggestionChoices,
-)
+from care.facility.models.patient_base import ADMIT_CHOICES, CURRENT_HEALTH_CHOICES, SYMPTOM_CHOICES, SuggestionChoices
 from care.users.models import User
 
 
@@ -81,7 +75,7 @@ class DailyRound(models.Model):
             request.user.user_type >= User.TYPE_VALUE_MAP["Staff"]
             and (
                 PatientConsultation.objects.get(
-                    id=request.parser_context["kwargs"]["consultation_pk"]
+                    external_id=request.parser_context["kwargs"]["consultation_external_id"]
                 ).facility.created_by
                 == request.user
             )
@@ -93,7 +87,7 @@ class DailyRound(models.Model):
             request.user.user_type >= User.TYPE_VALUE_MAP["Staff"]
             and (
                 PatientConsultation.objects.get(
-                    id=request.parser_context["kwargs"]["consultation_pk"]
+                    external_id=request.parser_context["kwargs"]["consultation_external_id"]
                 ).facility.created_by
                 == request.user
             )

@@ -32,7 +32,7 @@ from care.users.models import User
 
 class PatientFilterSet(filters.FilterSet):
     source = filters.ChoiceFilter(choices=PatientRegistration.SourceChoices)
-    facility = filters.NumberFilter(field_name="facility_id")
+    facility = filters.UUIDFilter(field_name="facility__external_id")
     phone_number = filters.CharFilter(field_name="phone_number")
 
 
@@ -43,9 +43,9 @@ class PatientDRYFilter(DRYPermissionFiltersBase):
 
         if not request.user.is_superuser:
             if request.user.user_type >= User.TYPE_VALUE_MAP["StateLabAdmin"]:
-                queryset = queryset.filter(state=request.user.state)
+                queryset = queryset.filter(facility__state=request.user.state)
             elif request.user.user_type >= User.TYPE_VALUE_MAP["DistrictLabAdmin"]:
-                queryset = queryset.filter(district=request.user.district)
+                queryset = queryset.filter(facility__district=request.user.district)
             elif view.action != "transfer":
                 queryset = queryset.filter(
                     Q(created_by=request.user)
@@ -134,12 +134,16 @@ class PatientViewSet(HistoryMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["POST"])
     def transfer(self, request, *args, **kwargs):
-        patient = self.get_object()
+        patient = PatientRegistration.objects.get(
+            id=PatientSearch.objects.get(external_id=kwargs["external_id"]).patient_id
+        )
         serializer = self.get_serializer_class()(patient, data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        patient.refresh_from_db()
+        patient = PatientRegistration.objects.get(
+            id=PatientSearch.objects.get(external_id=kwargs["external_id"]).patient_id
+        )
         response_serializer = self.get_serializer_class()(patient)
         return Response(data=response_serializer.data, status=status.HTTP_200_OK)
 
@@ -149,6 +153,7 @@ class FacilityPatientStatsHistoryFilterSet(filters.FilterSet):
 
 
 class FacilityPatientStatsHistoryViewSet(viewsets.ModelViewSet):
+    lookup_field = "external_id"
     permission_classes = (IsAuthenticated,)
     queryset = FacilityPatientStatsHistory.objects.all().order_by("-entry_date")
     serializer_class = FacilityPatientStatsHistorySerializer
@@ -158,13 +163,13 @@ class FacilityPatientStatsHistoryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        return queryset.filter(facility_id=self.kwargs.get("facility_pk"))
+        return queryset.filter(facility__external_id=self.kwargs.get("facility_external_id"))
 
     def get_object(self):
-        return get_object_or_404(self.get_queryset(), id=self.kwargs.get("pk"))
+        return get_object_or_404(self.get_queryset(), external_id=self.kwargs.get("external_id"))
 
     def get_facility(self):
-        facility_qs = Facility.objects.filter(pk=self.kwargs.get("facility_pk"))
+        facility_qs = Facility.objects.filter(external_id=self.kwargs.get("facility_external_id"))
         if not self.request.user.is_superuser:
             facility_qs.filter(created_by=self.request.user)
         return get_object_or_404(facility_qs)

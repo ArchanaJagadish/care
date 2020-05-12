@@ -22,6 +22,7 @@ from care.facility.models.patient_base import DISEASE_STATUS_CHOICES, DiseaseSta
 from care.facility.models.patient_consultation import PatientConsultation
 from care.facility.models.patient_tele_consultation import PatientTeleConsultation
 from care.users.api.serializers.lsg import DistrictSerializer, LocalBodySerializer, StateSerializer
+from care.utils.serializer.external_id_field import ExternalIdSerializerField
 from care.utils.serializer.phonenumber_ispossible_field import PhoneNumberIsPossibleField
 from config.serializers import ChoiceField
 
@@ -36,7 +37,7 @@ class PatientMetaInfoSerializer(serializers.ModelSerializer):
 
 class PatientListSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source="external_id", read_only=True)
-    facility = serializers.IntegerField(source="facility_id", allow_null=True, read_only=True)
+    facility = serializers.UUIDField(source="facility.external_id", allow_null=True, read_only=True)
     facility_object = FacilityBasicInfoSerializer(source="facility", read_only=True)
     local_body_object = LocalBodySerializer(source="local_body", read_only=True)
     district_object = DistrictSerializer(source="district", read_only=True)
@@ -65,10 +66,22 @@ class PatientContactDetailsSerializer(serializers.ModelSerializer):
     mode_of_contact = ChoiceField(choices=PatientContactDetails.ModeOfContactChoices)
 
     patient_in_contact_object = PatientListSerializer(read_only=True, source="patient_in_contact")
+    patient_in_contact = serializers.UUIDField(source="patient_in_contact.external_id")
 
     class Meta:
         model = PatientContactDetails
         exclude = ("patient",)
+
+    def validate_patient_in_contact(self, value):
+        if value:
+            value = PatientRegistration.objects.get(external_id=value)
+        return value
+
+    def to_internal_value(self, data):
+        iv = super().to_internal_value(data)
+        if iv.get("patient_in_contact"):
+            iv["patient_in_contact"] = iv["patient_in_contact"]["external_id"]
+        return iv
 
 
 class PatientDetailSerializer(PatientListSerializer):
@@ -81,9 +94,8 @@ class PatientDetailSerializer(PatientListSerializer):
             model = PatientTeleConsultation
             fields = "__all__"
 
-    id = serializers.CharField(source="external_id", read_only=True)
     phone_number = PhoneNumberIsPossibleField()
-    facility = serializers.IntegerField(source="facility_id", allow_null=True, required=False)
+    facility = serializers.UUIDField(source="facility.external_id", allow_null=True, required=False)
     medical_history = serializers.ListSerializer(child=MedicalHistorySerializer(), required=False)
 
     tele_consultation_history = serializers.ListSerializer(child=PatientTeleConsultationSerializer(), read_only=True)
@@ -140,6 +152,11 @@ class PatientDetailSerializer(PatientListSerializer):
             meta_info = validated_data.pop("meta_info", {})
             contacted_patients = validated_data.pop("contacted_patients", [])
 
+            if "facility" in validated_data:
+                external_id = validated_data.pop("facility")["external_id"]
+                if external_id:
+                    validated_data["facility_id"] = Facility.objects.get(external_id=external_id).id
+
             validated_data["created_by"] = self.context["request"].user
             patient = super().create(validated_data)
             diseases = []
@@ -166,6 +183,11 @@ class PatientDetailSerializer(PatientListSerializer):
             meta_info = validated_data.pop("meta_info", {})
             contacted_patients = validated_data.pop("contacted_patients", [])
 
+            if "facility" in validated_data:
+                external_id = validated_data.pop("facility")["external_id"]
+                if external_id:
+                    validated_data["facility_id"] = Facility.objects.get(external_id=external_id).id
+
             patient = super().update(instance, validated_data)
             Disease.objects.filter(patient=patient).update(deleted=True)
             diseases = []
@@ -190,11 +212,16 @@ class PatientDetailSerializer(PatientListSerializer):
 
 
 class FacilityPatientStatsHistorySerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="external_id", read_only=True)
     entry_date = serializers.DateField(default=make_aware(datetime.datetime.today()).date())
+    facility = ExternalIdSerializerField(queryset=Facility.objects.all(), read_only=True)
 
     class Meta:
         model = FacilityPatientStatsHistory
-        exclude = ("deleted",)
+        exclude = (
+            "deleted",
+            "external_id",
+        )
         read_only_fields = (
             "id",
             "facility",
@@ -212,16 +239,18 @@ class FacilityPatientStatsHistorySerializer(serializers.ModelSerializer):
 class PatientSearchSerializer(serializers.ModelSerializer):
     gender = ChoiceField(choices=GENDER_CHOICES)
     phone_number = PhoneNumberIsPossibleField()
-    facility_id = serializers.IntegerField(read_only=True, allow_null=True)
+    patient_id = serializers.UUIDField(source="external_id", read_only=True)
+    # facility_id = serializers.UUIDField(read_only=True, allow_null=True)
 
     class Meta:
         model = PatientSearch
-        exclude = ("date_of_birth", "year_of_birth")
+        exclude = ("date_of_birth", "year_of_birth", "external_id", "id") + TIMESTAMP_FIELDS
 
 
 class PatientTransferSerializer(serializers.ModelSerializer):
     facility_object = FacilityBasicInfoSerializer(source="facility", read_only=True)
-    patient = serializers.CharField(source="external_id", read_only=True)
+    facility = ExternalIdSerializerField(write_only=True, queryset=Facility.objects.all())
+    patient = serializers.UUIDField(source="external_id", read_only=True)
 
     class Meta:
         model = PatientRegistration
@@ -238,14 +267,3 @@ class PatientTransferSerializer(serializers.ModelSerializer):
     def save(self, **kwargs):
         self.instance.facility = self.validated_data["facility"]
         self.instance.save()
-
-
-class PatientField(serializers.Field):
-    def to_representation(self, patient):
-        return patient.external_id
-
-    def to_internal_value(self, external_id):
-        try:
-            return PatientRegistration.objects.get(external_id=external_id)
-        except PatientRegistration.DoesNotExist:
-            raise serializers.ValidationError({"patient": ["Invalid"]})
